@@ -1,0 +1,12 @@
+{
+  "siteName": "คำคมคู่ใจ",
+  "siteUrl": "https://example.com",
+  "basePath": "",
+  "tagline": "ค้นหาคำคมที่ตรงใจ แล้วเจอของที่เข้ากัน",
+  "ogDefaultImage": "",
+  "gaMeasurementId": "",
+  "trackEndpoint": "",
+  "contactEmail": "",
+  "affiliateWrap": { "shopee": "", "lazada": "" },
+  "sources": { "quotes_csv_url": "", "products_csv_url": "" }
+}
