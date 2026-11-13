@@ -36,6 +36,6 @@ Open your browser and visit http://localhost:3000
 
 # *** Before deploying to production, update site.config.json with your details:
 
-# siteUrl:  Replace with your live domain or GitHub Pages URL so canonical links and sitemap.xml point to the right address.
+siteUrl:  Replace with your live domain or GitHub Pages URL so canonical links and sitemap.xml point to the right address.
 
-# Google Sheets CSV URLs: Add your published CSV links if you want the build script to pull data directly from Google Sheets.
+Google Sheets CSV URLs: Add your published CSV links if you want the build script to pull data directly from Google Sheets.
