@@ -63,9 +63,34 @@
     s.src = "https://www.googletagmanager.com/gtag/js?id=" + encodeURIComponent(KK.ga);
     document.head.append(s);
   }
+  // ถอนความยินยอม: สั่ง GA หยุดเก็บ (ga-disable) และลบคุกกี้ของ GA ที่ตั้งไว้แล้ว
+  function clearGaCookies() {
+    const names = document.cookie.split(";").map((c) => c.split("=")[0].trim())
+      .filter((n) => n === "_ga" || n === "_gid" || n.indexOf("_ga_") === 0 || n.indexOf("_gat") === 0);
+    const parts = location.hostname.split(".");
+    const domains = [""];
+    for (let i = 0; i < parts.length - 1; i++) domains.push("." + parts.slice(i).join("."));
+    domains.push(location.hostname);
+    names.forEach((n) => domains.forEach((d) => {
+      document.cookie = n + "=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/" + (d ? "; domain=" + d : "");
+    }));
+  }
+  function disableGA() {
+    if (KK.ga) window["ga-disable-" + KK.ga] = true;
+    clearGaCookies();
+  }
   function showBanner() {
     if ($(".consent")) return;
-    const close = (v) => { setConsent(v); if (v === "yes") loadGA(); b.remove(); };
+    const close = (v) => {
+      setConsent(v);
+      if (v === "yes") {
+        if (KK.ga) window["ga-disable-" + KK.ga] = false;
+        loadGA();
+      } else {
+        disableGA();
+      }
+      b.remove();
+    };
     const b = el("div", { class: "consent", role: "dialog", "aria-label": "ความยินยอมการใช้คุกกี้" }, [
       el("p", {}, [
         "เว็บนี้ใช้ Google Analytics เพื่อดูว่าคำคมและสินค้าไหนมีคนสนใจ จะเริ่มเก็บข้อมูลก็ต่อเมื่อคุณกดยอมรับ ",
@@ -95,6 +120,8 @@
       } catch (e) { /* ไม่เป็นไร */ }
     }
   }
+
+  window.KKtrack = track; // ให้หน้าเกม (เกาะคำคม) ส่งเหตุการณ์ผ่านช่องทางและเงื่อนไขความยินยอมเดียวกัน
 
   /* ---------- ค้นหา ---------- */
   const norm = (s) => s.toLowerCase().replace(/\s+/g, " ").trim();

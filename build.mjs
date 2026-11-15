@@ -4,6 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { validateConfig } from "./src/grow/engine.mjs";
+import { analyze } from "./src/grow/analyze.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(ROOT, "dist");
@@ -21,10 +23,14 @@ const cfg = {
   gaMeasurementId: "",
   trackEndpoint: "",
   contactEmail: "",
+  allowedLinkHosts: [],
   ...raw,
   affiliateWrap: { shopee: "", lazada: "", ...(raw.affiliateWrap || {}) },
   sources: { quotes_csv_url: "", products_csv_url: "", ...(raw.sources || {}) }
 };
+// รายชื่อโดเมนที่อนุญาตให้ลิงก์ Affiliate ชี้ไป (ว่าง = อนุญาตทุกโดเมน https และพิมพ์โดเมนที่ใช้ตอนสรุปผล)
+cfg.allowedLinkHosts = (Array.isArray(cfg.allowedLinkHosts) ? cfg.allowedLinkHosts : [])
+  .map((h) => String(h).trim().toLowerCase().replace(/^\.+/, "")).filter(Boolean);
 cfg.siteUrl = cfg.siteUrl.replace(/\/+$/, "");
 cfg.basePath = cfg.basePath ? "/" + cfg.basePath.replace(/^\/+|\/+$/g, "") : "";
 if (cfg.siteUrl.includes("example.com")) {
@@ -38,6 +44,56 @@ const abs = (p) => cfg.siteUrl + cfg.basePath + p;
 const jsonForHtml = (o) => JSON.stringify(o).replace(/</g, "\\u003c");
 const splitList = (s) => (s || "").split("|").map((x) => x.trim()).filter(Boolean);
 const hash8 = (s) => crypto.createHash("sha1").update(s).digest("hex").slice(0, 8);
+
+/* ---------- ตรวจลิงก์และเส้นทางไฟล์ที่มาจากข้อมูล ----------
+   ข้อมูลมาจาก Google Sheets ซึ่งแก้ได้โดยคนอื่น จึงไม่เชื่อค่าที่กรอกมาตรงๆ
+   ค่าที่ผิดจะถูกบันทึกเป็นข้อผิดพลาด และ build จะหยุดก่อนเขียนไฟล์ใดๆ */
+const linkHosts = new Set();
+
+// ลิงก์ที่ผู้เข้าชมกดได้ ต้องเป็น https:// เต็มรูปเท่านั้น (กัน javascript: data: และ //โดเมนอื่น)
+function safeUrl(value, field, { record = true } = {}) {
+  let parsed;
+  try { parsed = new URL(value); } catch { errors.push(`${field}: ไม่ใช่ URL ที่ถูกต้อง "${value}"`); return ""; }
+  if (parsed.protocol !== "https:") { errors.push(`${field}: ต้องขึ้นต้นด้วย https:// เท่านั้น แต่ได้ "${value}"`); return ""; }
+  if (parsed.username || parsed.password) { errors.push(`${field}: ห้ามมีชื่อผู้ใช้หรือรหัสผ่านใน URL "${value}"`); return ""; }
+  const host = parsed.hostname.toLowerCase();
+  if (record && cfg.allowedLinkHosts.length && !cfg.allowedLinkHosts.some((h) => host === h || host.endsWith("." + h))) {
+    errors.push(`${field}: โดเมน ${host} ไม่อยู่ใน allowedLinkHosts ของ site.config.json`);
+    return "";
+  }
+  if (record) linkHosts.add(host);
+  return parsed.href;
+}
+
+// รูปในเว็บ: ต้องเป็น /ชื่อไฟล์ (ไฟล์ใน public/) หรือ https://... ถ้าไม่ขึ้นต้นด้วย / จะเติมให้พร้อมเตือน
+function assetPath(value, field) {
+  if (!value) return "";
+  if (/^http:\/\//i.test(value)) { errors.push(`${field}: ต้องเป็น https:// ไม่ใช่ http:// "${value}"`); return ""; }
+  if (/^https:\/\//i.test(value)) return safeUrl(value, field, { record: false });
+  if (/[\\\s\u0000-\u001f]/.test(value)) { errors.push(`${field}: ห้ามมีช่องว่าง เครื่องหมาย \\ หรืออักขระควบคุม "${value}"`); return ""; }
+  if (value.startsWith("//") || /^[a-z][a-z0-9+.-]*:/i.test(value)) { errors.push(`${field}: รูปแบบที่ไม่อนุญาต "${value}" ใช้ /ชื่อไฟล์ หรือ https://... เท่านั้น`); return ""; }
+  let p = value;
+  if (!p.startsWith("/")) { p = "/" + p; warnings.push(`${field}: "${value}" ไม่ขึ้นต้นด้วย / จึงเติมให้เป็น "${p}"`); }
+  if (p.split("/").includes("..")) { errors.push(`${field}: ห้ามใช้ ".." ในเส้นทาง "${value}"`); return ""; }
+  if (!fs.existsSync(path.join(ROOT, "public", p))) warnings.push(`${field}: ยังไม่พบไฟล์ public${p} (ลิงก์รูปจะเสียจนกว่าจะวางไฟล์)`);
+  return p;
+}
+
+function checkWrapTemplates() {
+  for (const kind of ["shopee", "lazada"]) {
+    const tpl = cfg.affiliateWrap[kind];
+    if (!tpl) continue;
+    if (!/^https:\/\//i.test(tpl) || !tpl.includes("{url}")) {
+      errors.push(`affiliateWrap.${kind}: ต้องขึ้นต้นด้วย https:// และมี {url} อยู่ในเทมเพลต`);
+    }
+  }
+}
+checkWrapTemplates();
+cfg.ogDefaultImage = assetPath(cfg.ogDefaultImage, "ogDefaultImage");
+if (cfg.trackEndpoint) cfg.trackEndpoint = safeUrl(cfg.trackEndpoint, "trackEndpoint", { record: false });
+if (cfg.gaMeasurementId && !/^G-[A-Z0-9]{4,}$/.test(cfg.gaMeasurementId)) {
+  errors.push(`gaMeasurementId: รูปแบบต้องเป็น G-XXXXXXXXXX แต่ได้ "${cfg.gaMeasurementId}"`);
+}
 
 function parseCSV(text) {
   text = text.replace(/^﻿/, "");
@@ -56,21 +112,57 @@ function parseCSV(text) {
   }
   if (cur !== "" || row.length) endRow();
   const [head, ...body] = rows;
+  if (!head) return [];
   return body.map((r) => Object.fromEntries(head.map((h, i) => [h.trim(), (r[i] ?? "").trim()])));
 }
 
-async function loadTable(name, url) {
-  if (url) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`ดึง ${name} จาก ${url} ไม่ได้ (HTTP ${res.status})`);
-    return parseCSV(await res.text());
+// ดึง CSV จาก Google Sheets: มี timeout, ข้อความผิดพลาดภาษาไทย และไม่แตะ dist/ เดิมถ้าล้มเหลว
+async function fetchCSV(name, url) {
+  let host = url;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") throw new Error("not https");
+    host = parsed.hostname;
+  } catch {
+    console.error(`ผิดพลาด: sources.${name}_csv_url ต้องเป็นลิงก์ https:// ที่ถูกต้อง`);
+    process.exit(1);
   }
-  return parseCSV(fs.readFileSync(path.join(ROOT, "data", name + ".csv"), "utf8"));
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    if (/^\s*</.test(text)) throw new Error("ได้หน้า HTML แทน CSV (ชีตอาจยังไม่ได้ Publish to web แบบ CSV)");
+    return text;
+  } catch (e) {
+    const why = e.name === "AbortError" ? "หมดเวลา 20 วินาที" : (e.cause && e.cause.code) || e.message;
+    console.error(`ผิดพลาด: ดึงข้อมูล "${name}" จาก ${host} ไม่ได้ (${why})\nไม่ได้แตะโฟลเดอร์ dist/ เดิม ตรวจว่าลิงก์เปิดได้ในเบราว์เซอร์ หรือเว้นว่าง sources เพื่อใช้ไฟล์ใน data/ แทน`);
+    process.exit(1);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function requireColumns(rows, cols, name) {
+  if (!rows.length) return;
+  const missing = cols.filter((c) => !(c in rows[0]));
+  if (missing.length) {
+    console.error(`ผิดพลาด: ตาราง "${name}" ไม่มีคอลัมน์ ${missing.join(", ")} (ตรวจชื่อหัวคอลัมน์แถวแรกให้ตรงกับ README)`);
+    process.exit(1);
+  }
+}
+
+async function loadTable(name, url, cols) {
+  const text = url ? await fetchCSV(name, url) : fs.readFileSync(path.join(ROOT, "data", name + ".csv"), "utf8");
+  const rows = parseCSV(text);
+  requireColumns(rows, cols, name);
+  return rows;
 }
 
 /* ---------- โหลดและตรวจข้อมูล ---------- */
-const quoteRows = await loadTable("quotes", cfg.sources.quotes_csv_url);
-const productRows = await loadTable("products", cfg.sources.products_csv_url);
+const quoteRows = await loadTable("quotes", cfg.sources.quotes_csv_url, ["id", "quote_text"]);
+const productRows = await loadTable("products", cfg.sources.products_csv_url, ["quote_id", "product_name"]);
 
 const quotes = [];
 const byId = new Map();
@@ -78,7 +170,7 @@ for (const r of quoteRows) {
   if (!r.id || !r.quote_text) { warnings.push(`ข้ามแถวคำคมที่ไม่มี id หรือ quote_text: ${JSON.stringify(r).slice(0, 80)}`); continue; }
   if (!/^[a-z0-9-]+$/.test(r.id)) { errors.push(`id "${r.id}" ต้องเป็นตัวอักษรอังกฤษพิมพ์เล็ก ตัวเลข และขีดกลางเท่านั้น`); continue; }
   if (byId.has(r.id)) { errors.push(`id "${r.id}" ซ้ำ`); continue; }
-  const q = { id: r.id, quote: r.quote_text, tags: splitList(r.tags), kw: splitList(r.keywords), og: r.og_image, products: [] };
+  const q = { id: r.id, quote: r.quote_text, tags: splitList(r.tags), kw: splitList(r.keywords), og: assetPath(r.og_image, `คำคม ${r.id} og_image`), products: [] };
   quotes.push(q);
   byId.set(q.id, q);
 }
@@ -87,9 +179,13 @@ for (const r of productRows) {
   const q = byId.get(r.quote_id);
   if (!q) { warnings.push(`สินค้า "${r.product_name}" อ้างถึง quote_id "${r.quote_id}" ที่ไม่มี จึงข้ามไป`); continue; }
   if (!r.product_name) { warnings.push(`ข้ามแถวสินค้าของ ${r.quote_id} ที่ไม่มี product_name`); continue; }
+  const where = `สินค้า ${r.id || r.product_name} (${r.quote_id})`;
   const p = {
-    name: r.product_name, desc: r.product_desc, image: r.image_url,
-    shopee: r.shopee_aff_link, lazada: r.lazada_aff_link, kw: r.search_keyword || r.product_name
+    name: r.product_name, desc: r.product_desc,
+    image: assetPath(r.image_url, `${where} image_url`),
+    shopee: r.shopee_aff_link ? safeUrl(r.shopee_aff_link, `${where} shopee_aff_link`) : "",
+    lazada: r.lazada_aff_link ? safeUrl(r.lazada_aff_link, `${where} lazada_aff_link`) : "",
+    kw: r.search_keyword || r.product_name
   };
   q.products.push(p);
   productCount++;
@@ -102,6 +198,18 @@ for (const q of quotes.slice()) {
   if (!q.products.length) {
     warnings.push(`คำคม "${q.id}" ไม่มีสินค้าเลย จึงไม่สร้างหน้านี้`);
     quotes.splice(quotes.indexOf(q), 1);
+  }
+}
+/* ---------- เกม "เกาะคำคม" (ไม่บังคับ: ไม่มี data/island.json ก็ไม่สร้างหน้าเกม) ---------- */
+let island = null;
+const islandFile = path.join(ROOT, "data/island.json");
+if (fs.existsSync(islandFile)) {
+  try { island = JSON.parse(fs.readFileSync(islandFile, "utf8")); }
+  catch (e) { errors.push(`data/island.json: อ่านเป็น JSON ไม่ได้ (${e.message})`); }
+  if (island) {
+    const errs = validateConfig(island);
+    errs.forEach((m) => errors.push(`data/island.json: ${m}`));
+    if (errs.length) island = null;
   }
 }
 if (errors.length) { console.error("ผิดพลาด:\n- " + errors.join("\n- ")); process.exit(1); }
@@ -120,12 +228,37 @@ const absAsset = (s) => (/^https?:\/\//.test(s) ? s : cfg.siteUrl + assetUrl(s))
 const PLACEHOLDER = '<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 7v10l9 4 9-4V7"/><path d="M12 11v10"/></svg>';
 const FAVICON = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='#3B3BF5'/><text x='32' y='52' font-size='60' text-anchor='middle' fill='white' font-family='Georgia,serif'>“</text></svg>");
 
+/* ---------- ข้อมูลเกม: วิเคราะห์ฉากจบ และจับคู่สินค้า ---------- */
+let islandReport = null;
+const islandProducts = {};
+if (island) {
+  islandReport = analyze(island);
+  if (islandReport.skipped) warnings.push(`เกาะคำคม: ข้ามการวิเคราะห์ฉากจบ (${islandReport.reason})`);
+  else for (const [id, n] of Object.entries(islandReport.counts)) {
+    if (n === 0) warnings.push(`เกาะคำคม: ฉากจบ "${id}" เป็นไปไม่ได้เลยในทุก ${islandReport.total.toLocaleString("en-US")} ลำดับการวาง ผู้เล่นจะไม่มีวันเห็นฉากนี้`);
+  }
+  for (const it of island.items) {
+    const list = [];
+    const names = new Set();
+    for (const q of quotes) {
+      if (!(it.tag && q.tags.includes(it.tag))) continue;
+      for (const p of q.products) {
+        if (names.has(p.name) || list.length >= 6) continue;
+        names.add(p.name);
+        list.push({ name: p.name, shopee: buyLink("shopee", p), lazada: buyLink("lazada", p) });
+      }
+    }
+    if (!list.length) warnings.push(`เกาะคำคม: ไอเทม "${it.id}" ไม่มีสินค้าที่ตรงกับแท็ก "${it.tag || ""}" จึงไม่แสดงสินค้าในฉากจบ`);
+    islandProducts[it.id] = list;
+  }
+}
+
 /* ---------- เทมเพลตหน้า ---------- */
 const cssV = hash8(fs.readFileSync(path.join(ROOT, "src/style.css"), "utf8"));
 const jsV = hash8(fs.readFileSync(path.join(ROOT, "src/app.js"), "utf8"));
 const kkConfig = jsonForHtml({ ga: cfg.gaMeasurementId, endpoint: cfg.trackEndpoint, base: cfg.basePath });
 
-function shell({ title, desc, p, image, body, noindex }) {
+function shell({ title, desc, p, image, body, noindex, head = "" }) {
   const img = image ? absAsset(image) : cfg.ogDefaultImage ? absAsset(cfg.ogDefaultImage) : "";
   return `<!doctype html>
 <html lang="th">
@@ -155,12 +288,13 @@ ${img ? `<meta name="twitter:image" content="${esc(img)}">` : ""}
 <link rel="stylesheet" href="${u("/assets/style.css")}?v=${cssV}">
 <script>window.KK=${kkConfig};</script>
 <script src="${u("/assets/app.js")}?v=${jsV}" defer></script>
+${head}
 </head>
 <body>
 <div class="wrap">
 <header class="top">
   <a class="brand" href="${u("/")}"><span class="mark" aria-hidden="true">“</span>${esc(cfg.siteName)}</a>
-  <nav aria-label="เมนูหลัก"><a href="${u("/about/")}">เกี่ยวกับเว็บนี้</a></nav>
+  <nav aria-label="เมนูหลัก">${island ? `<a href="${u("/island/")}">เกาะคำคม</a>` : ""}<a href="${u("/about/")}">เกี่ยวกับเว็บนี้</a></nav>
 </header>
 ${body}
 <footer>
@@ -326,12 +460,42 @@ const notFoundBody = `
   <p><a class="btn btn-primary" href="${u("/")}">กลับไปหน้าคำคมทั้งหมด</a></p>
 </div>`;
 
+const islandBody = island ? `
+<section class="hero" aria-labelledby="h1">
+  <h1 id="h1">${esc(island.title || "เกาะคำคม")}</h1>
+  <p class="lead">วางไอเทมทีละชิ้นลงบนเกาะ ชิ้นที่เข้ากันจะช่วยให้ชิ้นอื่นโตขึ้น วางได้ ${island.items.length} เทิร์น ลำดับที่เลือกมีผลต่อฉากจบ ลองหาลำดับที่ได้ฉากจบที่ใช่</p>
+</section>
+<section class="island" aria-label="เกมเกาะคำคม">
+  <p class="turn" id="turnInfo" aria-live="polite"></p>
+  <div class="board" id="board"></div>
+  <div class="tray" id="tray" role="group" aria-label="ไอเทมที่ยังไม่ได้วาง"></div>
+  <ol class="log" id="log" aria-live="polite" aria-label="บันทึกเหตุการณ์"></ol>
+  <div class="ending" id="ending" hidden>
+    <h2 id="endName"></h2>
+    <p id="endText"></p>
+    <p class="muted" id="endStat"></p>
+    <div class="actions">
+      <button class="btn btn-primary" type="button" id="shareBtn">แชร์ผลของฉัน</button>
+      <button class="btn btn-line" type="button" id="again">เล่นใหม่</button>
+    </div>
+    <div id="shopWrap" hidden>
+      <div class="list-head"><h2>ของคู่ใจสำหรับเกาะของคุณ</h2></div>
+      <ul class="items" id="shop"></ul>
+    </div>
+  </div>
+</section>
+<noscript><p>เกมนี้ต้องเปิด JavaScript ถึงจะเล่นได้</p></noscript>
+<script type="application/json" id="island-data">${jsonForHtml({ config: island, products: islandProducts })}</script>
+` : "";
+
 /* ---------- เขียนไฟล์ ---------- */
 fs.rmSync(DIST, { recursive: true, force: true });
+let htmlCount = 0;
 const write = (rel, content) => {
   const f = path.join(DIST, rel);
   fs.mkdirSync(path.dirname(f), { recursive: true });
   fs.writeFileSync(f, content);
+  if (rel.endsWith(".html")) htmlCount++;
 };
 if (fs.existsSync(path.join(ROOT, "public"))) fs.cpSync(path.join(ROOT, "public"), DIST, { recursive: true });
 fs.mkdirSync(path.join(DIST, "assets"), { recursive: true });
@@ -343,18 +507,35 @@ write("index.html", shell({ title: `${cfg.siteName} | ค้นหาคำค�
 quotes.forEach((q) => write(`quote/${q.id}/index.html`, quotePage(q)));
 write("about/index.html", shell({ title: `เกี่ยวกับเว็บนี้ | ${cfg.siteName}`, desc: `รู้จัก ${cfg.siteName} และวิธีที่เว็บหารายได้`, p: "/about/", body: aboutBody }));
 write("privacy/index.html", shell({ title: `นโยบายความเป็นส่วนตัว | ${cfg.siteName}`, desc: `นโยบายความเป็นส่วนตัวของ ${cfg.siteName}`, p: "/privacy/", body: privacyBody }));
+if (island) {
+  const gDir = path.join(ROOT, "src/grow");
+  const gV = hash8(fs.readFileSync(path.join(gDir, "island.js"), "utf8") + fs.readFileSync(path.join(gDir, "engine.mjs"), "utf8"));
+  fs.mkdirSync(path.join(DIST, "assets/grow"), { recursive: true });
+  // เผยแพร่เอนจินเป็น .js (ไม่ใช่ .mjs) เพราะโฮสต์บางเจ้าส่ง .mjs เป็น octet-stream แล้วเบราว์เซอร์ปฏิเสธโหลดโมดูล
+  fs.copyFileSync(path.join(gDir, "engine.mjs"), path.join(DIST, "assets/grow/engine.js"));
+  fs.writeFileSync(path.join(DIST, "assets/grow/island.js"), fs.readFileSync(path.join(gDir, "island.js"), "utf8").replace('"./engine.mjs"', '"./engine.js"'));
+  write("island/index.html", shell({
+    title: `${island.title || "เกาะคำคม"} | เกมวางไอเทมให้เกาะโต | ${cfg.siteName}`,
+    desc: "เกมวางไอเทมทีละชิ้น ดูว่าลำดับที่เลือกพาเกาะของคุณไปจบแบบไหน พร้อมไอเดียของคู่ใจตามเกาะของคุณ",
+    p: "/island/", body: islandBody,
+    head: `<script type="module" src="${u("/assets/grow/island.js")}?v=${gV}"></script>`
+  }));
+}
 write("404.html", shell({ title: `ไม่พบหน้านี้ | ${cfg.siteName}`, desc: "ไม่พบหน้าที่คุณต้องการ", p: "/404.html", body: notFoundBody, noindex: true }));
 write("search-index.json", JSON.stringify(searchIndex));
 
 const today = new Date().toISOString().slice(0, 10);
-const urls = ["/", ...quotes.map((q) => quotePath(q.id)), "/about/", "/privacy/"];
+const urls = ["/", ...quotes.map((q) => quotePath(q.id)), ...(island ? ["/island/"] : []), "/about/", "/privacy/"];
 write("sitemap.xml", `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map((p) => `  <url><loc>${esc(abs(p))}</loc><lastmod>${today}</lastmod></url>`).join("\n")}\n</urlset>\n`);
 write("robots.txt", `User-agent: *\nAllow: /\n\nSitemap: ${abs("/sitemap.xml")}\n`);
 
 /* ---------- สรุปผล ---------- */
-const pages = quotes.length + 5;
-console.log(`✓ สร้างเว็บเสร็จ: ${quotes.length} คำคม, ${productCount} สินค้า, ${pages} หน้า → ${path.relative(process.cwd(), DIST) || "dist"}/`);
+console.log(`✓ สร้างเว็บเสร็จ: ${quotes.length} คำคม, ${productCount} สินค้า, ${htmlCount} หน้า HTML → ${path.relative(process.cwd(), DIST) || "dist"}/`);
 console.log(`  ลิงก์ Affiliate จริง: ${affFilled}/${affSlots} ช่อง (ช่องที่ว่างจะพาไปหน้าค้นหาในร้าน)`);
+if (linkHosts.size) console.log(`  ลิงก์ Affiliate ชี้ไปโดเมน: ${[...linkHosts].sort().join(", ")} (ตรวจว่าเป็นของแพลตฟอร์มจริงทุกโดเมน)`);
+if (islandReport && !islandReport.skipped) {
+  console.log(`  เกาะคำคม: ลองครบ ${islandReport.total.toLocaleString("en-US")} ลำดับ ฉากจบที่ได้: ` + Object.entries(islandReport.counts).map(([id, n]) => `${id} ${((n / islandReport.total) * 100).toFixed(1)}%`).join(", "));
+}
 console.log(`  สินค้าที่ยังไม่มีรูป: ${noImage}/${productCount}`);
 const noOg = quotes.filter((q) => !q.og).length;
 console.log(`  คำคมที่ยังไม่มีรูปแชร์ (og_image): ${noOg}/${quotes.length}${cfg.ogDefaultImage ? " (ใช้รูปเริ่มต้นแทน)" : ""}`);
