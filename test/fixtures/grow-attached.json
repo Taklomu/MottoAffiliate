@@ -1,0 +1,201 @@
+{
+ "items": [
+  {
+   "id": "pickaxe",
+   "name": "pickaxe",
+   "maxLevel": 5,
+   "rules": {
+    "2": {},
+    "3": {
+     "requires": {
+      "screw": 2
+     }
+    },
+    "4": {
+     "requires": {
+      "battery": 1
+     }
+    },
+    "5": {
+     "requires": {
+      "microchip": 2
+     }
+    }
+   }
+  },
+  {
+   "id": "screw",
+   "name": "screw",
+   "maxLevel": 5,
+   "rules": {
+    "2": {
+     "requires": {
+      "pickaxe": 1
+     }
+    },
+    "3": {
+     "requires": {
+      "chimney": 1
+     }
+    },
+    "4": {
+     "requires": {
+      "wheel": 2
+     }
+    },
+    "5": {
+     "requires": {
+      "microchip": 1
+     }
+    }
+   }
+  },
+  {
+   "id": "logs",
+   "name": "logs",
+   "maxLevel": 5,
+   "rules": {
+    "2": {
+     "requires": {
+      "pickaxe": 2
+     }
+    },
+    "3": {
+     "requires": {
+      "screw": 2
+     }
+    },
+    "4": {
+     "requires": {
+      "battery": 2
+     }
+    },
+    "5": {
+     "requires": {
+      "microchip": 2
+     }
+    }
+   }
+  },
+  {
+   "id": "wheel",
+   "name": "wheel",
+   "maxLevel": 4,
+   "rules": {
+    "2": {
+     "requires": {
+      "logs": 1
+     }
+    },
+    "3": {
+     "requires": {
+      "screw": 3
+     }
+    },
+    "4": {
+     "requires": {
+      "battery": 2
+     }
+    }
+   }
+  },
+  {
+   "id": "battery",
+   "name": "battery",
+   "maxLevel": 4,
+   "rules": {
+    "2": {
+     "requires": {
+      "chimney": 1
+     }
+    },
+    "3": {
+     "requires": {
+      "screw": 3
+     }
+    },
+    "4": {
+     "requires": {
+      "microchip": 1
+     }
+    }
+   }
+  },
+  {
+   "id": "chimney",
+   "name": "chimney",
+   "maxLevel": 4,
+   "rules": {
+    "2": {
+     "requires": {
+      "pickaxe": 2
+     }
+    },
+    "3": {
+     "requires": {
+      "logs": 2
+     }
+    },
+    "4": {
+     "requires": {
+      "battery": 2
+     }
+    }
+   }
+  },
+  {
+   "id": "microchip",
+   "name": "microchip",
+   "maxLevel": 3,
+   "rules": {
+    "2": {
+     "requires": {
+      "battery": 2
+     }
+    },
+    "3": {
+     "requires": {
+      "logs": 3,
+      "wheel": 2
+     }
+    }
+   }
+  },
+  {
+   "id": "car",
+   "name": "car",
+   "maxLevel": 3,
+   "rules": {
+    "2": {
+     "requires": {
+      "wheel": 3,
+      "battery": 2
+     }
+    },
+    "3": {
+     "requires": {
+      "microchip": 3
+     }
+    }
+   }
+  }
+ ],
+ "endings": [
+  {
+   "id": "MAX_UTOPIA",
+   "allMax": true
+  },
+  {
+   "id": "SECRET_UFO",
+   "min": {
+    "microchip": 3,
+    "car": 3,
+    "battery": 3
+   }
+  },
+  {
+   "id": "NORMAL_COMPLETE"
+  }
+ ],
+ "fallbackEnding": "NORMAL_COMPLETE"
+}
